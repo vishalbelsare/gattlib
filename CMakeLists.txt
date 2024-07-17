@@ -1,10 +1,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0-or-later
 #
-# Copyright (c) 2016-2021, Olivier Martin <olivier@labapart.org>
+# Copyright (c) 2016-2024, Olivier Martin <olivier@labapart.org>
 #
 
-cmake_minimum_required(VERSION 3.4)
+cmake_minimum_required(VERSION 3.22.0)
 
 # Add Cross-Compilation support when the environment variables
 # CROSS_COMPILE and SYSROOT are defined
@@ -12,10 +12,12 @@ include(CrossCompilation.cmake)
 
 project(gattlib)
 
+#TODO: Gattlib examples must be ported to new gattlib_connect()
 option(GATTLIB_BUILD_EXAMPLES "Build GattLib examples" YES)
 option(GATTLIB_SHARED_LIB "Build GattLib as a shared library" YES)
-option(GATTLIB_BUILD_DOCS "Build GattLib docs" YES)
-option(GATTLIB_PYTHON_INTERFACE "Build GattLib Python Interface" YES)
+option(GATTLIB_BUILD_DOCS "Build GattLib docs" NO)
+option(GATTLIB_PYTHON_INTERFACE "Build GattLib Python Interface" NO)
+option(GATTLIB_ENABLE_ADDRESS_SANITIZER "Enable address sanitizer" NO)
 
 find_package(PkgConfig REQUIRED)
 find_package(Doxygen)
@@ -25,8 +27,26 @@ if (NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE "Debug")
 endif()
 
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+  add_definitions(-DDEBUG)
+endif()
+
 # Show all the warnings
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall")
+if (MSVC)
+  # warning level 4
+  add_compile_options(/W4)
+else()
+  # additional warnings
+  add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-variadic-macros)
+endif()
+# Add stack protector
+add_compile_options(-fstack-protector-strong)
+
+if (GATTLIB_ENABLE_ADDRESS_SANITIZER)
+  add_compile_options(-fsanitize=address -fsanitize=bounds -fsanitize=undefined -fsanitize-recover=address)
+  add_link_options(-fsanitize=address -fsanitize=bounds -fsanitize=undefined -fsanitize-recover=address -static-libasan)
+endif()
+
 # Expose 'gattlib.h' to all sub-directories
 include_directories(include)
 
@@ -61,7 +81,7 @@ endif()
 # With 'syslog' backend, we enable all logs (ie: up to level debug) and we leave the
 # application to set the level using 'setlogmask()'
 set(GATTLIB_LOG_LEVEL 3 CACHE STRING "Define the minimum logging level for Gattlib (0=error, 1=warning, 2=info, 3=debug)")
-set(GATTLIB_LOG_BACKEND syslog CACHE STRING "Define logging backend: syslog, printf (default: syslog)")
+set(GATTLIB_LOG_BACKEND syslog CACHE STRING "Define logging backend: syslog, printf, python (default: syslog)")
 
 if (GATTLIB_DBUS)
   # Build dbus-based gattlib
@@ -98,9 +118,10 @@ if(GATTLIB_BUILD_EXAMPLES)
   add_subdirectory(examples/discover)
   add_subdirectory(examples/find_eddystone)
   add_subdirectory(examples/read_write)
-  add_subdirectory(examples/read_write_memory)
+  #add_subdirectory(examples/read_write_memory)
   add_subdirectory(examples/notification)
   add_subdirectory(examples/nordic_uart)
+  add_subdirectory(tests/test_continuous_connection)
 
   # Some examples require Bluez code and other DBus support
   if (NOT GATTLIB_DBUS)
@@ -112,13 +133,13 @@ endif()
 # Packaging
 #
 set(CPACK_PACKAGE_INSTALL_DIRECTORY /usr CACHE STRING "Install directory (default: /usr).")
-if (ENV{TRAVIS_TAG} AND (NOT "ENV{TRAVIS_TAG}" STREQUAL "dev"))
-  message("Package Gattlib for tagged version $ENV{TRAVIS_TAG}")
+if (ENV{PACKAGE_VERSION} AND (NOT "ENV{PACKAGE_VERSION}" STREQUAL "dev"))
+  message("Package Gattlib for tagged version $ENV{PACKAGE_VERSION}")
 
   # Transform 'v0.3' into '0.3' and 'v0.3-rc1' into '0.3-rc1'
-  string(REGEX REPLACE "v([0-9]+).([0-9]+)(.*)" "\\1.\\2\\3" CPACK_PACKAGE_VERSION $ENV{TRAVIS_TAG})
+  string(REGEX REPLACE "v([0-9]+).([0-9]+)(.*)" "\\1.\\2\\3" CPACK_PACKAGE_VERSION $ENV{PACKAGE_VERSION})
 else()
-  set(CPACK_PACKAGE_VERSION 0.3-dev)
+  set(CPACK_PACKAGE_VERSION 0.4-dev)
   message("Package Gattlib for development version $ENV{CPACK_PACKAGE_VERSION}")
 endif()
 set(CPACK_PACKAGE_CONTACT "Olivier Martin <olivier@labapart.com>")

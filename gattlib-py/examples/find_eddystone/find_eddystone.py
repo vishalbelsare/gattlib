@@ -3,24 +3,24 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 #
-# Copyright (c) 2016-2021, Olivier Martin <olivier@labapart.org>
+# Copyright (c) 2016-2024, Olivier Martin <olivier@labapart.org>
 #
 
 import argparse
-import threading
+import time
 
-from gattlib import adapter
+from gattlib import adapter, mainloop
+
+SCAN_TIMEOUT_SEC = 60
 
 parser = argparse.ArgumentParser(description='Gattlib Find Eddystone device example')
+parser.add_argument('--duration', default=SCAN_TIMEOUT_SEC, type=int, help='Duration of the BLE scanning')
 args = parser.parse_args()
-
-# Use default adapter
-default_adapter = adapter.Adapter()
 
 
 def on_eddystone_device_found(device, advertisement_data, manufacturer_id, manufacturer_data, user_data):
-    rssi = default_adapter.get_rssi_from_mac(device.id)
-    print("Find Eddystone device %s (RSSI:%d)" % (device.id, rssi))
+    rssi = default_adapter.get_rssi_from_mac(device.mac_address)
+    print("Find Eddystone device %s (RSSI:%d)" % (device.mac_address, rssi))
 
     # Service Data
     eddystone_data = advertisement_data[adapter.EDDYSTONE_COMMON_DATA_UUID]
@@ -35,9 +35,17 @@ def on_eddystone_device_found(device, advertisement_data, manufacturer_id, manuf
     else:
         print("Eddystone frame not supported: 0x%x" % eddystone_data[0])
 
+# Use default adapter
+default_adapter = adapter.Adapter()
 
-# Scan for 30 seconds
-default_adapter.open()
-default_adapter.scan_eddystone_enable(on_eddystone_device_found,
-                                      adapter.GATTLIB_EDDYSTONE_TYPE_UID | adapter.GATTLIB_EDDYSTONE_TYPE_URL | adapter.GATTLIB_EDDYSTONE_TYPE_TLM | adapter.GATTLIB_EDDYSTONE_TYPE_EID,
-                                      30)  # Look for 30 seconds
+def scan_ble_devices():
+    default_adapter.open()
+    # Scan for 'args.duration' seconds
+    default_adapter.scan_eddystone_enable(on_eddystone_device_found,
+                                          adapter.GATTLIB_EDDYSTONE_TYPE_UID | adapter.GATTLIB_EDDYSTONE_TYPE_URL | adapter.GATTLIB_EDDYSTONE_TYPE_TLM | adapter.GATTLIB_EDDYSTONE_TYPE_EID,
+                                          args.duration)
+
+    # Because scan_enable() is not blocking, we need to wait for the same duration
+    time.sleep(args.duration)
+
+mainloop.run_mainloop_with(scan_ble_devices)

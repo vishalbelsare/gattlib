@@ -74,7 +74,7 @@ done:
 	data->discovered = TRUE;
 }
 
-int gattlib_discover_primary(gatt_connection_t* connection, gattlib_primary_service_t** services, int* services_count) {
+int gattlib_discover_primary(gattlib_connection_t* connection, gattlib_primary_service_t** services, int* services_count) {
 	struct primary_all_cb_t user_data;
 	guint ret;
 
@@ -85,7 +85,7 @@ int gattlib_discover_primary(gatt_connection_t* connection, gattlib_primary_serv
 	ret = gatt_discover_primary(conn_context->attrib, NULL, primary_all_cb, &user_data);
 	if (ret == 0) {
 		GATTLIB_LOG(GATTLIB_ERROR, "Fail to discover primary services.");
-		return GATTLIB_ERROR_BLUEZ;
+		return GATTLIB_ERROR_BLUEZ_WITH_ERROR(ret);
 	}
 
 	// Wait for completion
@@ -146,7 +146,7 @@ done:
 	data->discovered = TRUE;
 }
 
-int gattlib_discover_char_range(gatt_connection_t* connection, int start, int end, gattlib_characteristic_t** characteristics, int* characteristics_count) {
+int gattlib_discover_char_range(gattlib_connection_t* connection, uint16_t start, uint16_t end, gattlib_characteristic_t** characteristics, int* characteristics_count) {
 	struct characteristic_cb_t user_data;
 	guint ret;
 
@@ -157,11 +157,11 @@ int gattlib_discover_char_range(gatt_connection_t* connection, int start, int en
 	ret = gatt_discover_char(conn_context->attrib, start, end, NULL, characteristic_cb, &user_data);
 	if (ret == 0) {
 		GATTLIB_LOG(GATTLIB_ERROR, "Fail to discover characteristics.");
-		return GATTLIB_ERROR_BLUEZ;
+		return GATTLIB_ERROR_BLUEZ_WITH_ERROR(ret);
 	}
 
 	// Wait for completion
-	while(user_data.discovered == FALSE) {		
+	while(user_data.discovered == FALSE) {
 		g_main_context_iteration(g_gattlib_thread.loop_context, FALSE);
 	}
 	*characteristics       = user_data.characteristics;
@@ -170,7 +170,7 @@ int gattlib_discover_char_range(gatt_connection_t* connection, int start, int en
 	return GATTLIB_SUCCESS;
 }
 
-int gattlib_discover_char(gatt_connection_t* connection, gattlib_characteristic_t** characteristics, int* characteristics_count) {
+int gattlib_discover_char(gattlib_connection_t* connection, gattlib_characteristic_t** characteristics, int* characteristics_count) {
 	return gattlib_discover_char_range(connection, 0x0001, 0xffff, characteristics, characteristics_count);
 }
 
@@ -264,7 +264,7 @@ done:
 }
 #endif
 
-int gattlib_discover_desc_range(gatt_connection_t* connection, int start, int end, gattlib_descriptor_t** descriptors, int* descriptor_count) {
+int gattlib_discover_desc_range(gattlib_connection_t* connection, int start, int end, gattlib_descriptor_t** descriptors, int* descriptor_count) {
 	gattlib_context_t* conn_context = connection->context;
 	struct descriptor_cb_t descriptor_data;
 	guint ret;
@@ -278,7 +278,7 @@ int gattlib_discover_desc_range(gatt_connection_t* connection, int start, int en
 #endif
 	if (ret == 0) {
 		fprintf(stderr, "Fail to discover descriptors.\n");
-		return GATTLIB_ERROR_BLUEZ;
+		return GATTLIB_ERROR_BLUEZ_WITH_ERROR(ret);
 	}
 
 	// Wait for completion
@@ -292,7 +292,7 @@ int gattlib_discover_desc_range(gatt_connection_t* connection, int start, int en
 	return GATTLIB_SUCCESS;
 }
 
-int gattlib_discover_desc(gatt_connection_t* connection, gattlib_descriptor_t** descriptors, int* descriptor_count) {
+int gattlib_discover_desc(gattlib_connection_t* connection, gattlib_descriptor_t** descriptors, int* descriptor_count) {
 	return gattlib_discover_desc_range(connection, 0x0001, 0xffff, descriptors, descriptor_count);
 }
 
@@ -303,15 +303,14 @@ int gattlib_discover_desc(gatt_connection_t* connection, gattlib_descriptor_t** 
  * @param mac_address is the MAC address of the device to get the RSSI
  * @param advertisement_data is an array of Service UUID and their respective data
  * @param advertisement_data_count is the number of elements in the advertisement_data array
- * @param manufacturer_id is the ID of the Manufacturer ID
- * @param manufacturer_data is the data following Manufacturer ID
- * @param manufacturer_data_size is the size of manufacturer_data
+ * @param manufacturer_data is an array of `gattlib_manufacturer_data_t`
+ * @param manufacturer_data_count is the number of entry in `gattlib_manufacturer_data_t` array
  *
  * @return GATTLIB_SUCCESS on success or GATTLIB_* error code
  */
-int gattlib_get_advertisement_data(gatt_connection_t *connection,
+int gattlib_get_advertisement_data(gattlib_connection_t *connection,
 		gattlib_advertisement_data_t **advertisement_data, size_t *advertisement_data_count,
-		uint16_t *manufacturer_id, uint8_t **manufacturer_data, size_t *manufacturer_data_size)
+		gattlib_manufacturer_data_t** manufacturer_data, size_t* manufacturer_data_count)
 {
 	return GATTLIB_NOT_SUPPORTED;
 }
@@ -323,15 +322,14 @@ int gattlib_get_advertisement_data(gatt_connection_t *connection,
  * @param mac_address is the MAC address of the device to get the RSSI
  * @param advertisement_data is an array of Service UUID and their respective data
  * @param advertisement_data_count is the number of elements in the advertisement_data array
- * @param manufacturer_id is the ID of the Manufacturer ID
- * @param manufacturer_data is the data following Manufacturer ID
- * @param manufacturer_data_size is the size of manufacturer_data
+ * @param manufacturer_data is an array of `gattlib_manufacturer_data_t`
+ * @param manufacturer_data_count is the number of entry in `gattlib_manufacturer_data_t` array
  *
  * @return GATTLIB_SUCCESS on success or GATTLIB_* error code
  */
-int gattlib_get_advertisement_data_from_mac(void *adapter, const char *mac_address,
+int gattlib_get_advertisement_data_from_mac(gattlib_adapter_t* adapter, const char *mac_address,
 		gattlib_advertisement_data_t **advertisement_data, size_t *advertisement_data_count,
-		uint16_t *manufacturer_id, uint8_t **manufacturer_data, size_t *manufacturer_data_size)
+		gattlib_manufacturer_data_t** manufacturer_data, size_t* manufacturer_data_count)
 {
 	return GATTLIB_NOT_SUPPORTED;
 }

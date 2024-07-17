@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2021, Olivier Martin <olivier@labapart.org>
+ * Copyright (c) 2016-2024, Olivier Martin <olivier@labapart.org>
  */
 
 #include <stdlib.h>
@@ -18,7 +18,7 @@ const uuid_t m_battery_level_uuid = CREATE_UUID16(0x2A19);
 static const uuid_t m_ccc_uuid = CREATE_UUID16(0x2902);
 
 
-static bool handle_dbus_gattcharacteristic_from_path(gattlib_context_t* conn_context, const uuid_t* uuid,
+static bool handle_dbus_gattcharacteristic_from_path(struct _gattlib_connection_backend* backend, const uuid_t* uuid,
 		struct dbus_characteristic *dbus_characteristic, const char* object_path, GError **error)
 {
 	OrgBluezGattCharacteristic1 *characteristic = NULL;
@@ -26,7 +26,7 @@ static bool handle_dbus_gattcharacteristic_from_path(gattlib_context_t* conn_con
 	*error = NULL;
 	characteristic = org_bluez_gatt_characteristic1_proxy_new_for_bus_sync (
 			G_BUS_TYPE_SYSTEM,
-			G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
+			G_DBUS_PROXY_FLAGS_NONE,
 			"org.bluez",
 			object_path,
 			NULL,
@@ -54,14 +54,14 @@ static bool handle_dbus_gattcharacteristic_from_path(gattlib_context_t* conn_con
 		*error = NULL;
 		OrgBluezGattService1* service = org_bluez_gatt_service1_proxy_new_for_bus_sync (
 			G_BUS_TYPE_SYSTEM,
-			G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
+			G_DBUS_PROXY_FLAGS_NONE,
 			"org.bluez",
 			org_bluez_gatt_characteristic1_get_service(characteristic),
 			NULL,
 			error);
 
 		if (service) {
-			const bool found = !strcmp(conn_context->device_object_path, org_bluez_gatt_service1_get_device(service));
+			const bool found = !strcmp(backend->device_object_path, org_bluez_gatt_service1_get_device(service));
 
 			g_object_unref(service);
 
@@ -79,7 +79,7 @@ static bool handle_dbus_gattcharacteristic_from_path(gattlib_context_t* conn_con
 }
 
 #if BLUEZ_VERSION > BLUEZ_VERSIONS(5, 40)
-static bool handle_dbus_battery_from_uuid(gattlib_context_t* conn_context, const uuid_t* uuid,
+static bool handle_dbus_battery_from_uuid(struct _gattlib_connection_backend* backend, const uuid_t* uuid,
 		struct dbus_characteristic *dbus_characteristic, const char* object_path, GError **error)
 {
 	OrgBluezBattery1 *battery = NULL;
@@ -87,7 +87,7 @@ static bool handle_dbus_battery_from_uuid(gattlib_context_t* conn_context, const
 	*error = NULL;
 	battery = org_bluez_battery1_proxy_new_for_bus_sync (
 			G_BUS_TYPE_SYSTEM,
-			G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
+			G_DBUS_PROXY_FLAGS_NONE,
 			"org.bluez",
 			object_path,
 			NULL,
@@ -101,19 +101,30 @@ static bool handle_dbus_battery_from_uuid(gattlib_context_t* conn_context, const
 }
 #endif
 
-struct dbus_characteristic get_characteristic_from_uuid(gatt_connection_t* connection, const uuid_t* uuid) {
-	gattlib_context_t* conn_context = connection->context;
-	GDBusObjectManager *device_manager = get_device_manager_from_adapter(conn_context->adapter);
+struct dbus_characteristic get_characteristic_from_uuid(gattlib_connection_t* connection, const uuid_t* uuid) {
 	GError *error = NULL;
+	GDBusObjectManager *device_manager;
 	bool is_battery_level_uuid = false;
-
 	struct dbus_characteristic dbus_characteristic = {
-			.type = TYPE_NONE
+		.type = TYPE_NONE
 	};
 
+	g_rec_mutex_lock(&m_gattlib_mutex);
+
+	if (!gattlib_connection_is_connected(connection)) {
+		goto EXIT;
+	}
+
+	device_manager = get_device_manager_from_adapter(connection->device->adapter, &error);
+
 	if (device_manager == NULL) {
-		GATTLIB_LOG(GATTLIB_ERROR, "Gattlib Context not initialized.");
-		return dbus_characteristic; // Return characteristic of type TYPE_NONE
+		if (error != NULL) {
+			GATTLIB_LOG(GATTLIB_ERROR, "Gattlib Context not initialized (%d, %d).", error->domain, error->code);
+			g_error_free(error);
+		} else {
+			GATTLIB_LOG(GATTLIB_ERROR, "Gattlib Context not initialized.");
+		}
+		goto EXIT; // Return characteristic of type TYPE_NONE
 	}
 
 	// Some GATT Characteristics are handled by D-BUS
@@ -121,11 +132,11 @@ struct dbus_characteristic get_characteristic_from_uuid(gatt_connection_t* conne
 		is_battery_level_uuid = true;
 	} else if (gattlib_uuid_cmp(uuid, &m_ccc_uuid) == 0) {
 		GATTLIB_LOG(GATTLIB_ERROR, "Error: Bluez v5.42+ does not expose Client Characteristic Configuration Descriptor through DBUS interface");
-		return dbus_characteristic;
+		goto EXIT;
 	}
 
 	GList *l;
-	for (l = conn_context->dbus_objects; l != NULL; l = l->next)  {
+	for (l = connection->backend.dbus_objects; l != NULL; l = l->next)  {
 		GDBusInterface *interface;
 		bool found = false;
 		GDBusObject *object = l->data;
@@ -135,7 +146,7 @@ struct dbus_characteristic get_characteristic_from_uuid(gatt_connection_t* conne
 		if (interface) {
 			g_object_unref(interface);
 
-			found = handle_dbus_gattcharacteristic_from_path(conn_context, uuid, &dbus_characteristic, object_path, &error);
+			found = handle_dbus_gattcharacteristic_from_path(&connection->backend, uuid, &dbus_characteristic, object_path, &error);
 			if (found) {
 				break;
 			}
@@ -147,7 +158,7 @@ struct dbus_characteristic get_characteristic_from_uuid(gatt_connection_t* conne
 			if (interface) {
 				g_object_unref(interface);
 
-				found = handle_dbus_battery_from_uuid(conn_context, uuid, &dbus_characteristic, object_path, &error);
+				found = handle_dbus_battery_from_uuid(&connection->backend, uuid, &dbus_characteristic, object_path, &error);
 				if (found) {
 					break;
 				}
@@ -158,25 +169,38 @@ struct dbus_characteristic get_characteristic_from_uuid(gatt_connection_t* conne
 		}
 	}
 
+EXIT:
+	g_rec_mutex_unlock(&m_gattlib_mutex);
 	return dbus_characteristic;
 }
 
-static struct dbus_characteristic get_characteristic_from_handle(gatt_connection_t* connection, int handle) {
-	gattlib_context_t* conn_context = connection->context;
-	GDBusObjectManager *device_manager = get_device_manager_from_adapter(conn_context->adapter);
+static struct dbus_characteristic get_characteristic_from_handle(gattlib_connection_t* connection, unsigned int handle) {
 	GError *error = NULL;
-	int char_handle;
-
+	unsigned int char_handle;
+	GDBusObjectManager *device_manager;
 	struct dbus_characteristic dbus_characteristic = {
-			.type = TYPE_NONE
+		.type = TYPE_NONE
 	};
 
-	if (device_manager == NULL) {
-		GATTLIB_LOG(GATTLIB_ERROR, "Gattlib context not initialized.");
-		return dbus_characteristic;
+	g_rec_mutex_lock(&m_gattlib_mutex);
+
+	if (!gattlib_connection_is_connected(connection)) {
+		goto EXIT;
 	}
 
-	for (GList *l = conn_context->dbus_objects; l != NULL; l = l->next)  {
+	device_manager = get_device_manager_from_adapter(connection->device->adapter, &error);
+
+	if (device_manager == NULL) {
+		if (error != NULL) {
+			GATTLIB_LOG(GATTLIB_ERROR, "Gattlib Context not initialized (%d, %d).", error->domain, error->code);
+			g_error_free(error);
+		} else {
+			GATTLIB_LOG(GATTLIB_ERROR, "Gattlib Context not initialized.");
+		}
+		goto EXIT;
+	}
+
+	for (GList *l = connection->backend.dbus_objects; l != NULL; l = l->next)  {
 		GDBusInterface *interface;
 		bool found;
 		GDBusObject *object = l->data;
@@ -194,13 +218,15 @@ static struct dbus_characteristic get_characteristic_from_handle(gatt_connection
 				continue;
 			}
 
-			found = handle_dbus_gattcharacteristic_from_path(conn_context, NULL, &dbus_characteristic, object_path, &error);
+			found = handle_dbus_gattcharacteristic_from_path(&connection->backend, NULL, &dbus_characteristic, object_path, &error);
 			if (found) {
 				break;
 			}
 		}
 	}
 
+EXIT:
+	g_rec_mutex_unlock(&m_gattlib_mutex);
 	return dbus_characteristic;
 }
 
@@ -219,9 +245,10 @@ static int read_gatt_characteristic(struct dbus_characteristic *dbus_characteris
 	g_variant_builder_unref(options);
 #endif
 	if (error != NULL) {
+		ret = GATTLIB_ERROR_DBUS_WITH_ERROR(error);
 		GATTLIB_LOG(GATTLIB_ERROR, "Failed to read DBus GATT characteristic: %s", error->message);
 		g_error_free(error);
-		return GATTLIB_ERROR_DBUS;
+		return ret;
 	}
 
 	gsize n_elements = 0;
@@ -245,10 +272,16 @@ EXIT:
 }
 
 #if BLUEZ_VERSION > BLUEZ_VERSIONS(5, 40)
-static int read_battery_level(struct dbus_characteristic *dbus_characteristic, void* buffer, size_t* buffer_len) {
+static int read_battery_level(struct dbus_characteristic *dbus_characteristic, void** buffer, size_t* buffer_len) {
 	guchar percentage = org_bluez_battery1_get_percentage(dbus_characteristic->battery);
 
-	memcpy(buffer, &percentage, sizeof(uint8_t));
+	*buffer = malloc(sizeof(uint8_t));
+	if (buffer == NULL) {
+		*buffer_len = 0;
+		return GATTLIB_OUT_OF_MEMORY;
+	}
+
+	memcpy(*buffer, &percentage, sizeof(uint8_t));
 	*buffer_len = sizeof(uint8_t);
 
 	g_object_unref(dbus_characteristic->battery);
@@ -256,7 +289,12 @@ static int read_battery_level(struct dbus_characteristic *dbus_characteristic, v
 }
 #endif
 
-int gattlib_read_char_by_uuid(gatt_connection_t* connection, uuid_t* uuid, void **buffer, size_t *buffer_len) {
+int gattlib_read_char_by_uuid(gattlib_connection_t* connection, uuid_t* uuid, void **buffer, size_t *buffer_len) {
+	//
+	// No need of locking the gattlib mutex. get_characteristic_from_uuid() is taking care of the gattlib
+	// object coherency. And 'dbus_characteristic' is not linked to gattlib object
+	//
+
 	struct dbus_characteristic dbus_characteristic = get_characteristic_from_uuid(connection, uuid);
 	if (dbus_characteristic.type == TYPE_NONE) {
 		return GATTLIB_NOT_FOUND;
@@ -279,8 +317,13 @@ int gattlib_read_char_by_uuid(gatt_connection_t* connection, uuid_t* uuid, void 
 	}
 }
 
-int gattlib_read_char_by_uuid_async(gatt_connection_t* connection, uuid_t* uuid, gatt_read_cb_t gatt_read_cb) {
+int gattlib_read_char_by_uuid_async(gattlib_connection_t* connection, uuid_t* uuid, gatt_read_cb_t gatt_read_cb) {
 	int ret = GATTLIB_SUCCESS;
+
+	//
+	// No need of locking the gattlib mutex. get_characteristic_from_uuid() is taking care of the gattlib
+	// object coherency. And 'dbus_characteristic' is not linked to gattlib object
+	//
 
 	struct dbus_characteristic dbus_characteristic = get_characteristic_from_uuid(connection, uuid);
 	if (dbus_characteristic.type == TYPE_NONE) {
@@ -314,9 +357,9 @@ int gattlib_read_char_by_uuid_async(gatt_connection_t* connection, uuid_t* uuid,
 	g_variant_builder_unref(options);
 #endif
 	if (error != NULL) {
+		ret = GATTLIB_ERROR_DBUS_WITH_ERROR(error);
 		GATTLIB_LOG(GATTLIB_ERROR, "Failed to read DBus GATT characteristic: %s", error->message);
 		g_error_free(error);
-		ret = GATTLIB_ERROR_DBUS;
 		goto EXIT;
 	}
 
@@ -353,9 +396,15 @@ static int write_char(struct dbus_characteristic *dbus_characteristic, const voi
 #endif
 
 	if (error != NULL) {
-		GATTLIB_LOG(GATTLIB_ERROR, "Failed to write DBus GATT characteristic: %s", error->message);
+		if ((error->domain == 238) && (error->code == 36)) {
+			ret = GATTLIB_DEVICE_NOT_CONNECTED;
+		} else {
+			GATTLIB_LOG(GATTLIB_ERROR, "Failed to write DBus GATT characteristic: %s (%d,%d)",
+				error->message, error->domain, error->code);
+			ret = GATTLIB_ERROR_DBUS_WITH_ERROR(error);
+		}
 		g_error_free(error);
-		return GATTLIB_ERROR_DBUS;
+		return ret;
 	}
 
 	//
@@ -366,9 +415,14 @@ static int write_char(struct dbus_characteristic *dbus_characteristic, const voi
 	return ret;
 }
 
-int gattlib_write_char_by_uuid(gatt_connection_t* connection, uuid_t* uuid, const void* buffer, size_t buffer_len)
+int gattlib_write_char_by_uuid(gattlib_connection_t* connection, uuid_t* uuid, const void* buffer, size_t buffer_len)
 {
 	int ret;
+
+	//
+	// No need of locking the gattlib mutex. get_characteristic_from_uuid() is taking care of the gattlib
+	// object coherency. And 'dbus_characteristic' is not linked to gattlib object
+	//
 
 	struct dbus_characteristic dbus_characteristic = get_characteristic_from_uuid(connection, uuid);
 	if (dbus_characteristic.type == TYPE_NONE) {
@@ -385,9 +439,14 @@ int gattlib_write_char_by_uuid(gatt_connection_t* connection, uuid_t* uuid, cons
 	return ret;
 }
 
-int gattlib_write_char_by_handle(gatt_connection_t* connection, uint16_t handle, const void* buffer, size_t buffer_len)
+int gattlib_write_char_by_handle(gattlib_connection_t* connection, uint16_t handle, const void* buffer, size_t buffer_len)
 {
 	int ret;
+
+	//
+	// No need of locking the gattlib mutex. get_characteristic_from_handle() is taking care of the gattlib
+	// object coherency. And 'dbus_characteristic' is not linked to gattlib object
+	//
 
 	struct dbus_characteristic dbus_characteristic = get_characteristic_from_handle(connection, handle);
 	if (dbus_characteristic.type == TYPE_NONE) {
@@ -400,9 +459,14 @@ int gattlib_write_char_by_handle(gatt_connection_t* connection, uint16_t handle,
 	return ret;
 }
 
-int gattlib_write_without_response_char_by_uuid(gatt_connection_t* connection, uuid_t* uuid, const void* buffer, size_t buffer_len)
+int gattlib_write_without_response_char_by_uuid(gattlib_connection_t* connection, uuid_t* uuid, const void* buffer, size_t buffer_len)
 {
 	int ret;
+
+	//
+	// No need of locking the gattlib mutex. get_characteristic_from_uuid() is taking care of the gattlib
+	// object coherency. And 'dbus_characteristic' is not linked to gattlib object
+	//
 
 	struct dbus_characteristic dbus_characteristic = get_characteristic_from_uuid(connection, uuid);
 	if (dbus_characteristic.type == TYPE_NONE) {
@@ -419,9 +483,14 @@ int gattlib_write_without_response_char_by_uuid(gatt_connection_t* connection, u
 	return ret;
 }
 
-int gattlib_write_without_response_char_by_handle(gatt_connection_t* connection, uint16_t handle, const void* buffer, size_t buffer_len)
+int gattlib_write_without_response_char_by_handle(gattlib_connection_t* connection, uint16_t handle, const void* buffer, size_t buffer_len)
 {
 	int ret;
+
+	//
+	// No need of locking the gattlib mutex. get_characteristic_from_handle() is taking care of the gattlib
+	// object coherency. And 'dbus_characteristic' is not linked to gattlib object
+	//
 
 	struct dbus_characteristic dbus_characteristic = get_characteristic_from_handle(connection, handle);
 	if (dbus_characteristic.type == TYPE_NONE) {
@@ -432,4 +501,8 @@ int gattlib_write_without_response_char_by_handle(gatt_connection_t* connection,
 
 	g_object_unref(dbus_characteristic.gatt);
 	return ret;
+}
+
+void gattlib_characteristic_free_value(void *ptr) {
+	free(ptr);
 }

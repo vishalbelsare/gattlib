@@ -8,16 +8,16 @@
 
 #if BLUEZ_VERSION < BLUEZ_VERSIONS(5, 40)
 
-int gattlib_get_advertisement_data(gatt_connection_t *connection,
+int gattlib_get_advertisement_data(gattlib_connection_t *connection,
 		gattlib_advertisement_data_t **advertisement_data, size_t *advertisement_data_count,
-		uint16_t *manufacturer_id, uint8_t **manufacturer_data, size_t *manufacturer_data_size)
+		gattlib_manufacturer_data_t** manufacturer_data, size_t* manufacturer_data_count)
 {
 	return GATTLIB_NOT_SUPPORTED;
 }
 
-int gattlib_get_advertisement_data_from_mac(void *adapter, const char *mac_address,
+int gattlib_get_advertisement_data_from_mac(gattlib_adapter_t* adapter, const char *mac_address,
 		gattlib_advertisement_data_t **advertisement_data, size_t *advertisement_data_count,
-		uint16_t *manufacturer_id, uint8_t **manufacturer_data, size_t *manufacturer_data_size)
+		gattlib_manufacturer_data_t** manufacturer_data, size_t* manufacturer_data_count)
 {
 	return GATTLIB_NOT_SUPPORTED;
 }
@@ -26,7 +26,7 @@ int gattlib_get_advertisement_data_from_mac(void *adapter, const char *mac_addre
 
 int get_advertisement_data_from_device(OrgBluezDevice1 *bluez_device1,
 		gattlib_advertisement_data_t **advertisement_data, size_t *advertisement_data_count,
-		uint16_t *manufacturer_id, uint8_t **manufacturer_data, size_t *manufacturer_data_size)
+		gattlib_manufacturer_data_t** manufacturer_data, size_t* manufacturer_data_count)
 {
 	GVariant *manufacturer_data_variant;
 	GVariant *service_data_variant;
@@ -35,36 +35,38 @@ int get_advertisement_data_from_device(OrgBluezDevice1 *bluez_device1,
 		return GATTLIB_INVALID_PARAMETER;
 	}
 
-	*manufacturer_id = 0;
-	*manufacturer_data_size = 0;
+	*manufacturer_data_count = 0;
+	*manufacturer_data = NULL;
 	manufacturer_data_variant = org_bluez_device1_get_manufacturer_data(bluez_device1);
 	if (manufacturer_data_variant != NULL) {
-		if (g_variant_n_children(manufacturer_data_variant) != 1) {
-			GATTLIB_LOG(GATTLIB_WARNING, "Manufacturer Data with multiple children: %s",
-					g_variant_print(manufacturer_data_variant, TRUE));
-			return GATTLIB_NOT_SUPPORTED;
-		}
-		GVariant* manufacturer_data_dict = g_variant_get_child_value(manufacturer_data_variant, 0);
-		GVariantIter *iter;
-		GVariant* values;
-
-		g_variant_get(manufacturer_data_dict, "{qv}", manufacturer_id, &values);
-		*manufacturer_data_size = g_variant_n_children(values);
-
-		*manufacturer_data = calloc(*manufacturer_data_size, sizeof(guchar));
+		*manufacturer_data_count = g_variant_n_children(manufacturer_data_variant);
+		*manufacturer_data = malloc(sizeof(gattlib_manufacturer_data_t) * (*manufacturer_data_count));
 		if (*manufacturer_data == NULL) {
 			return GATTLIB_OUT_OF_MEMORY;
 		}
 
-		GVariant* value;
-		g_variant_get(values, "ay", &iter);
-		size_t index = 0;
+		for (uintptr_t i = 0; i < *manufacturer_data_count; i++) {
+			GVariant* manufacturer_data_dict = g_variant_get_child_value(manufacturer_data_variant, i);
+			GVariantIter *iter;
+			GVariant* values;
+			uint16_t manufacturer_id = 0;
 
-		while ((value = g_variant_iter_next_value(iter)) != NULL) {
-			g_variant_get(value, "y", &(*manufacturer_data)[index++]);
-			g_variant_unref(value);
+			g_variant_get(manufacturer_data_dict, "{qv}", &manufacturer_id, &values);
+			(*manufacturer_data)[i].manufacturer_id = manufacturer_id;
+			(*manufacturer_data)[i].data_size = g_variant_n_children(values);
+			(*manufacturer_data)[i].data = calloc((*manufacturer_data)[i].data_size, sizeof(guchar));
+			if ((*manufacturer_data)[i].data == NULL) {
+				return GATTLIB_OUT_OF_MEMORY;
+			}
+
+			// Copy manufacturer data to structure
+			for (unsigned int j = 0; j < (*manufacturer_data)[i].data_size; j++)
+			{
+				GVariant *v = g_variant_get_child_value(values, j);
+
+				(*manufacturer_data)[i].data[j] = g_variant_get_byte(v);
+			}
 		}
-		g_variant_iter_free(iter);
 	}
 
 	service_data_variant = org_bluez_device1_get_service_data(bluez_device1);
@@ -105,49 +107,91 @@ int get_advertisement_data_from_device(OrgBluezDevice1 *bluez_device1,
 
 		*advertisement_data = advertisement_data_ptr;
 	} else {
-		*advertisement_data_count = 0;
-		*advertisement_data = NULL;
+		const gchar* const* service_strs = org_bluez_device1_get_uuids(bluez_device1);
+		if (service_strs && (*service_strs)) {
+			uuid_t uuid;
+			int ret, len = strlen((char *)*service_strs);
+			if (!len) goto error_return;
+
+			ret = gattlib_string_to_uuid((char *)*service_strs, len, &uuid);
+			if (ret) goto error_return;
+
+			*advertisement_data = calloc(sizeof(gattlib_advertisement_data_t), 1);
+			if (!(*advertisement_data)) {
+				*advertisement_data_count = 0;
+				return GATTLIB_OUT_OF_MEMORY;
+			}
+			*advertisement_data_count = 1;
+			memcpy(&(*advertisement_data)[0].uuid, &uuid, sizeof(uuid));
+		}
+		else
+		{
+		error_return:
+			*advertisement_data_count = 0;
+			*advertisement_data = NULL;
+		}
 	}
 
 	return GATTLIB_SUCCESS;
 }
 
-int gattlib_get_advertisement_data(gatt_connection_t *connection,
+int gattlib_get_advertisement_data(gattlib_connection_t *connection,
 		gattlib_advertisement_data_t **advertisement_data, size_t *advertisement_data_count,
-		uint16_t *manufacturer_id, uint8_t **manufacturer_data, size_t *manufacturer_data_size)
+		gattlib_manufacturer_data_t** manufacturer_data, size_t* manufacturer_data_count)
 {
-	gattlib_context_t* conn_context;
+	int ret;
+
+	g_rec_mutex_lock(&m_gattlib_mutex);
 
 	if (connection == NULL) {
+		g_rec_mutex_unlock(&m_gattlib_mutex);
 		return GATTLIB_INVALID_PARAMETER;
 	}
 
-	conn_context = connection->context;
+	if (!gattlib_connection_is_valid(connection)) {
+		g_rec_mutex_unlock(&m_gattlib_mutex);
+		return GATTLIB_DEVICE_DISCONNECTED;
+	}
 
-	return get_advertisement_data_from_device(conn_context->device,
-			advertisement_data, advertisement_data_count,
-			manufacturer_id, manufacturer_data, manufacturer_data_size);
+	// device is actually a GObject. Increasing its reference counter prevents to
+	// be freed if the connection is released.
+	OrgBluezDevice1* dbus_device = connection->backend.device;
+	g_object_ref(dbus_device);
+	g_rec_mutex_unlock(&m_gattlib_mutex);
+
+	ret = get_advertisement_data_from_device(dbus_device,
+		advertisement_data, advertisement_data_count,
+		manufacturer_data, manufacturer_data_count);
+
+	g_object_unref(dbus_device);
+
+	return ret;
 }
 
-int gattlib_get_advertisement_data_from_mac(void *adapter, const char *mac_address,
+int gattlib_get_advertisement_data_from_mac(gattlib_adapter_t* adapter, const char *mac_address,
 		gattlib_advertisement_data_t **advertisement_data, size_t *advertisement_data_count,
-		uint16_t *manufacturer_id, uint8_t **manufacturer_data, size_t *manufacturer_data_size)
+		gattlib_manufacturer_data_t** manufacturer_data, size_t* manufacturer_data_count)
 {
 	OrgBluezDevice1 *bluez_device1;
 	int ret;
 
+	//
+	// No need of locking the mutex in this function. It is already done by get_bluez_device_from_mac()
+	// and get_advertisement_data_from_device() does not depend on gattlib objects
+	//
+
 	ret = get_bluez_device_from_mac(adapter, mac_address, &bluez_device1);
 	if (ret != GATTLIB_SUCCESS) {
-		g_object_unref(bluez_device1);
-		return ret;
+		goto EXIT;
 	}
 
 	ret = get_advertisement_data_from_device(bluez_device1,
 			advertisement_data, advertisement_data_count,
-			manufacturer_id, manufacturer_data, manufacturer_data_size);
+			manufacturer_data, manufacturer_data_count);
 
 	g_object_unref(bluez_device1);
 
+EXIT:
 	return ret;
 }
 

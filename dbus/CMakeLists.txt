@@ -1,10 +1,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 #
-# Copyright (c) 2016-2021, Olivier Martin <olivier@labapart.org>
+# Copyright (c) 2016-2024, Olivier Martin <olivier@labapart.org>
 #
 
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.22.0)
 
 find_package(PkgConfig REQUIRED)
 
@@ -73,13 +73,24 @@ set(gattlib_SRCS gattlib.c
                  gattlib_stream.c
                  bluez5/lib/uuid.c
                  ${CMAKE_CURRENT_LIST_DIR}/../common/gattlib_common.c
+                 ${CMAKE_CURRENT_LIST_DIR}/../common/gattlib_common_adapter.c
+                 ${CMAKE_CURRENT_LIST_DIR}/../common/gattlib_device_state_management.c
                  ${CMAKE_CURRENT_LIST_DIR}/../common/gattlib_eddystone.c
+                 ${CMAKE_CURRENT_LIST_DIR}/../common/gattlib_callback_connected_device.c
+                 ${CMAKE_CURRENT_LIST_DIR}/../common/gattlib_callback_disconnected_device.c
+                 ${CMAKE_CURRENT_LIST_DIR}/../common/gattlib_callback_discovered_device.c
+                 ${CMAKE_CURRENT_LIST_DIR}/../common/gattlib_callback_notification_device.c
                  ${CMAKE_CURRENT_LIST_DIR}/../common/logging_backend/${GATTLIB_LOG_BACKEND}/gattlib_logging.c
+                 ${CMAKE_CURRENT_LIST_DIR}/../common/mainloop/gattlib_glib_mainloop.c
                  ${CMAKE_CURRENT_BINARY_DIR}/org-bluez-adaptater1.c
                  ${CMAKE_CURRENT_BINARY_DIR}/org-bluez-device1.c
                  ${CMAKE_CURRENT_BINARY_DIR}/org-bluez-gattcharacteristic1.c
                  ${CMAKE_CURRENT_BINARY_DIR}/org-bluez-gattdescriptor1.c
                  ${CMAKE_CURRENT_BINARY_DIR}/org-bluez-gattservice1.c)
+
+if (GATTLIB_PYTHON_INTERFACE)
+  list(APPEND gattlib_SRCS ${CMAKE_CURRENT_LIST_DIR}/../common/gattlib_callback_python.c)
+endif()
 
 if (BLUEZ_VERSION_MINOR GREATER 40)
 	list(APPEND gattlib_SRCS ${CMAKE_CURRENT_BINARY_DIR}/org-bluez-battery1.c)
@@ -96,13 +107,24 @@ if(GATTLIB_PYTHON_INTERFACE)
   else()
     set(Python_USE_STATIC_LIBS TRUE)
   endif()
-  find_package(Python COMPONENTS Interpreter Development)
-  if (Python_Development_FOUND)
-	include_directories(${Python_INCLUDE_DIRS})
-	list(APPEND gattlib_LIBS ${Python_LIBRARIES})
 
-	add_definitions(-DWITH_PYTHON)
+  find_package(Python3 COMPONENTS Interpreter Development)
+  if (NOT Python3_Development_FOUND)
+    find_package(Python3 COMPONENTS Development.Module)
+    if (NOT Python3_Development.Module_FOUND)
+      message(FATAL_ERROR "Could not find Python developer package")
+    endif()
+
+    # Case of mainlinux container to build Wheel Python package
+    if (NOT Python3_LIBRARIES)
+      set(Python3_LIBRARIES "")
+    endif()
   endif()
+
+  include_directories(${Python3_INCLUDE_DIRS})
+  list(APPEND gattlib_LIBS ${Python3_LIBRARIES})
+
+  add_definitions(-DWITH_PYTHON -DPYTHON_VERSION_MAJOR=${Python3_VERSION_MAJOR} -DPYTHON_VERSION_MINOR=${Python3_VERSION_MINOR})
 endif()
 
 # Gattlib

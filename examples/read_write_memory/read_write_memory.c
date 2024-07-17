@@ -48,7 +48,7 @@ struct connect_ble_params {
 
 void *connect_ble(void *arg) {
 	struct connect_ble_params *params = arg;
-	gatt_connection_t* connection;
+	gattlib_connection_t* connection;
 	int ret, i;
 	size_t len;
 
@@ -83,7 +83,7 @@ void *connect_ble(void *arg) {
 			}
 			printf("\n");
 
-			free(buffer);
+			gattlib_characteristic_free_value(buffer);
 		}
 	} else {
 		ret = gattlib_write_char_by_uuid(connection, &m_uuid, &params->value_data, sizeof(params->value_data));
@@ -104,7 +104,7 @@ void *connect_ble(void *arg) {
 	}
 
 EXIT:
-	gattlib_disconnect(connection);
+	gattlib_disconnect(connection, false /* wait_disconnection */);
 	g_main_loop_quit(m_main_loop);
 
 	return NULL;
